@@ -9,6 +9,30 @@ import pytest
 
 from resolve_ytdlp import deps as deps_module
 
+_FAKE_YTDLP_TEMPLATE = """\
+#!/usr/bin/env python3
+import signal
+import sys
+import time
+
+if {ignore_sigterm!r}:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+for line in {stdout_lines!r}:
+    print(line, flush=True)
+    if {line_delay!r}:
+        time.sleep({line_delay!r})
+
+if {delay_before_exit!r}:
+    time.sleep({delay_before_exit!r})
+
+stderr_text = {stderr_text!r}
+if stderr_text:
+    print(stderr_text, file=sys.stderr, end="")
+
+sys.exit({exit_code!r})
+"""
+
 
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -43,6 +67,47 @@ def make_fake_binary(tmp_path: Path):
         path = directory / name
         path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         path.chmod(0o755 if executable else 0o644)
+        return path
+
+    return _make
+
+
+@pytest.fixture
+def make_fake_ytdlp(tmp_path: Path):
+    """Factory fixture: writes an executable stub "yt-dlp" script with scripted behavior.
+
+    Real `subprocess.Popen`/threading/signal handling is exercised against this
+    script in `test_downloader.py` — the far end (real yt-dlp/ffmpeg/network) is
+    what's faked, not `Popen` itself. Mirrors `make_fake_binary`'s
+    executable-stub-file style, extended with scriptable stdout/stderr/exit
+    behavior needed for progress-parsing and cancel tests.
+
+    Usage: ``make_fake_ytdlp(tmp_path, stdout_lines=[...], exit_code=1, ...)``.
+    """
+
+    def _make(
+        directory: Path,
+        *,
+        stdout_lines: list[str] | None = None,
+        stderr_text: str = "",
+        exit_code: int = 0,
+        line_delay: float = 0.0,
+        delay_before_exit: float = 0.0,
+        ignore_sigterm: bool = False,
+        name: str = "yt-dlp",
+    ) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
+        script = _FAKE_YTDLP_TEMPLATE.format(
+            stdout_lines=stdout_lines or [],
+            stderr_text=stderr_text,
+            exit_code=exit_code,
+            line_delay=line_delay,
+            delay_before_exit=delay_before_exit,
+            ignore_sigterm=ignore_sigterm,
+        )
+        path.write_text(script, encoding="utf-8")
+        path.chmod(0o755)
         return path
 
     return _make
