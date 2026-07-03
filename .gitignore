@@ -1,0 +1,14 @@
+# Planning / scratch (grill-me, plan-pr, tech-design)
+.ai/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local settings / logs produced at runtime
+*.log

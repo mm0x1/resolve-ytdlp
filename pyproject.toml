@@ -1,0 +1,34 @@
+[project]
+name = "resolve-ytdlp"
+version = "0.1.0"
+description = "Download videos with yt-dlp and import them straight into a DaVinci Resolve media-pool bin."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "moramoji91", email = "moramoji91@gmail.com" }]
+
+# NOTE: this section documents packaging metadata only. Code under `resolve_ytdlp/`
+# ships into Resolve's embedded Python interpreter, where `pip install` is not
+# available at runtime, so `resolve_ytdlp/*` must import stdlib only. `dependencies`
+# is intentionally empty; only dev tooling is declared below.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["resolve_ytdlp*"]
