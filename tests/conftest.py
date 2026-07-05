@@ -130,3 +130,104 @@ def isolate_common_locations(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(
         deps_module, "common_locations", lambda: (tmp_home / ".local" / "bin",)
     )
+
+
+class FakeFolder:
+    """Stand-in for a Resolve `Folder` object: a name and a list of sub-folders."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.subfolders: list[FakeFolder] = []
+
+    def GetName(self) -> str:
+        return self.name
+
+    def GetSubFolderList(self) -> list[FakeFolder]:
+        return self.subfolders
+
+
+class FakeMediaPool:
+    """Stand-in for a Resolve `MediaPool`, with scriptable failure modes.
+
+    `add_subfolder_fails` simulates `AddSubFolder` returning `None` (creation
+    failure). `import_media_missing` simulates `ImportMedia` silently omitting
+    that many trailing paths from its returned list (partial/total failure).
+    `call_log` records call order so tests can assert `SetCurrentFolder` runs
+    before `ImportMedia`.
+    """
+
+    def __init__(
+        self,
+        *,
+        add_subfolder_fails: bool = False,
+        import_media_missing: int = 0,
+    ) -> None:
+        self.root = FakeFolder("Master")
+        self.current_folder: FakeFolder | None = None
+        self.add_subfolder_calls = 0
+        self.call_log: list[str] = []
+        self._add_subfolder_fails = add_subfolder_fails
+        self._import_media_missing = import_media_missing
+
+    def GetRootFolder(self) -> FakeFolder:
+        return self.root
+
+    def AddSubFolder(self, parent: FakeFolder, name: str) -> FakeFolder | None:
+        self.add_subfolder_calls += 1
+        if self._add_subfolder_fails:
+            return None
+        folder = FakeFolder(name)
+        parent.subfolders.append(folder)
+        return folder
+
+    def SetCurrentFolder(self, folder: FakeFolder) -> bool:
+        self.call_log.append("SetCurrentFolder")
+        self.current_folder = folder
+        return True
+
+    def ImportMedia(self, paths: list[str]) -> list[str]:
+        self.call_log.append("ImportMedia")
+        missing = min(self._import_media_missing, len(paths))
+        return paths[: len(paths) - missing]
+
+
+class FakeResolveApp:
+    """Stand-in for the top-level `resolve` app object. `media_pool=None` models
+    "no project open" (`GetMediaPool()` returning falsy)."""
+
+    def __init__(self, media_pool: FakeMediaPool | None) -> None:
+        self._media_pool = media_pool
+
+    def GetMediaPool(self) -> FakeMediaPool | None:
+        return self._media_pool
+
+
+@pytest.fixture
+def make_fake_resolve_app():
+    """Factory fixture building a `FakeResolveApp` with a configurable media pool.
+
+    Usage: ``make_fake_resolve_app(existing_bins=["yt-dlp"])`` for a bin that
+    already exists, ``make_fake_resolve_app(no_project=True)`` for no project
+    open, ``make_fake_resolve_app(import_media_missing=1)`` for a partial
+    `ImportMedia` failure.
+    """
+
+    def _make(
+        *,
+        no_project: bool = False,
+        existing_bins: list[str] | None = None,
+        add_subfolder_fails: bool = False,
+        import_media_missing: int = 0,
+    ) -> FakeResolveApp:
+        if no_project:
+            return FakeResolveApp(media_pool=None)
+
+        media_pool = FakeMediaPool(
+            add_subfolder_fails=add_subfolder_fails,
+            import_media_missing=import_media_missing,
+        )
+        for name in existing_bins or []:
+            media_pool.root.subfolders.append(FakeFolder(name))
+        return FakeResolveApp(media_pool)
+
+    return _make

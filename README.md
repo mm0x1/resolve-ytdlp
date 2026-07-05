@@ -13,11 +13,65 @@ and imports it directly into a media-pool bin, without leaving Resolve.
 
 ## Install
 
-_TODO: documented in a later PR alongside `install.py`._
+Run the installer from a checkout of this repository, using your regular system Python (not
+Resolve's embedded interpreter):
+
+```sh
+python install.py
+```
+
+This resolves DaVinci Resolve's per-user Scripts/Utility directory for your OS and installs the
+entry script + `resolve_ytdlp/` package into it:
+
+- macOS: `~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility`
+- Linux: `~/.local/share/DaVinciResolve/Fusion/Scripts/Utility` (falling back to
+  `/opt/resolve/Fusion/Scripts/Utility` if the per-user directory doesn't exist, e.g. a
+  system-wide install)
+
+By default, `install.py` **symlinks** the entry script and package when run from inside a git
+checkout (so edits to your working copy take effect immediately, no reinstall needed), and
+**copies** them otherwise (e.g. from a downloaded release archive, as a standalone tree
+independent of the original files). Force one or the other explicitly:
+
+```sh
+python install.py --mode symlink
+python install.py --mode copy
+```
+
+Pass `--target-dir <path>` to install somewhere other than the auto-detected Resolve directory
+(useful for a non-standard Resolve install location).
+
+### Manual install (fallback)
+
+If the installer fails, or Resolve changes its script directory layout, install by hand instead:
+
+1. Find your DaVinci Resolve Scripts/Utility directory (see paths above; check Resolve's own
+   preferences/install location if neither matches).
+2. Copy (or symlink) this repo's `scripts/download_from_url.py` and `resolve_ytdlp/` directory
+   directly into that directory, as siblings — not into a subdirectory. Resolve only lists script
+   files placed directly inside Scripts/Utility in its menu.
 
 ## Usage
 
-_TODO: documented in a later PR alongside the GUI entry point._
+1. In DaVinci Resolve, open **Workspace > Scripts > Utility > Download from URL (yt-dlp)**.
+2. Paste a video (or playlist) URL into the URL field.
+3. Pick a format preset (Best MP4, 1080p, 720p, Audio MP3, Audio best), or enter a custom yt-dlp
+   `-f` selector. Optionally check "Show available formats" to fetch and display the exact format
+   list for that URL first.
+4. Adjust subtitle, metadata/thumbnail embedding, download directory, playlist item limit, and
+   auto-import options as needed, then click **Download**.
+5. If the URL is a playlist, you'll be asked to confirm the number of entries before it starts.
+6. Progress is shown live in the window. Click **Cancel** at any point to stop the download and
+   clean up its partial file.
+7. When a download finishes, it's automatically imported into a `yt-dlp` bin in the current
+   project's media pool (toggle this off with the auto-import checkbox). Importing requires a
+   Resolve project to be open; if none is open, the file still downloads to disk, but you'll need
+   to import it manually.
+
+Settings persist between sessions. Full logs (including yt-dlp's own output and any errors) are
+written to a rotating log file under your per-OS config directory: `~/Library/Application
+Support/resolve-ytdlp/logs/` on macOS, `~/.config/resolve-ytdlp/logs/` on Linux — check there
+first if something goes wrong that isn't clear from the window.
 
 ## Development
 
