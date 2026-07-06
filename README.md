@@ -20,13 +20,19 @@ Resolve's embedded interpreter):
 python install.py
 ```
 
-This resolves DaVinci Resolve's per-user Scripts/Utility directory for your OS and installs the
-entry script + `resolve_ytdlp/` package into it:
+This resolves DaVinci Resolve's per-user Scripts directory for your OS and installs:
 
-- macOS: `~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility`
-- Linux: `~/.local/share/DaVinciResolve/Fusion/Scripts/Utility` (falling back to
-  `/opt/resolve/Fusion/Scripts/Utility` if the per-user directory doesn't exist, e.g. a
-  system-wide install)
+- the entry script into **Scripts/Utility** (so it shows up in Resolve's Scripts menu):
+  - macOS: `~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility`
+  - Linux: `~/.local/share/DaVinciResolve/Fusion/Scripts/Utility` (falling back to
+    `/opt/resolve/Fusion/Scripts/Utility` if the per-user directory doesn't exist, e.g. a
+    system-wide install)
+- the `resolve_ytdlp/` package into the sibling **Scripts/Modules** directory — Resolve's own
+  convention for shared script code. This matters: Resolve's Scripts menu recursively lists every
+  subdirectory as a submenu and every `.py` file inside it as its own runnable entry, so the
+  package can't live alongside the entry script in Scripts/Utility without every internal module
+  (`config`, `deps`, `downloader`, ...) showing up as a spurious menu item. Scripts/Modules isn't
+  scanned for menu entries, only added to the Python path.
 
 By default, `install.py` **symlinks** the entry script and package when run from inside a git
 checkout (so edits to your working copy take effect immediately, no reinstall needed), and
@@ -38,18 +44,21 @@ python install.py --mode symlink
 python install.py --mode copy
 ```
 
-Pass `--target-dir <path>` to install somewhere other than the auto-detected Resolve directory
-(useful for a non-standard Resolve install location).
+Pass `--target-dir <path>` / `--modules-dir <path>` to install somewhere other than the
+auto-detected Resolve directories (useful for a non-standard Resolve install location).
 
 ### Manual install (fallback)
 
 If the installer fails, or Resolve changes its script directory layout, install by hand instead:
 
-1. Find your DaVinci Resolve Scripts/Utility directory (see paths above; check Resolve's own
-   preferences/install location if neither matches).
-2. Copy (or symlink) this repo's `scripts/download_from_url.py` and `resolve_ytdlp/` directory
-   directly into that directory, as siblings — not into a subdirectory. Resolve only lists script
-   files placed directly inside Scripts/Utility in its menu.
+1. Find your DaVinci Resolve Scripts directory (see paths above; check Resolve's own
+   preferences/install location if neither matches). It should contain (or you should create)
+   `Utility` and `Modules` subdirectories.
+2. Copy (or symlink) this repo's `scripts/Download from URL (yt-dlp).py` directly into
+   `Scripts/Utility`.
+3. Copy (or symlink) this repo's `resolve_ytdlp/` directory directly into `Scripts/Modules` (as a
+   sibling of `Utility`, not inside it) — putting it in `Utility` instead will make Resolve's
+   Scripts menu list every internal module as its own (broken) menu entry.
 
 ## Usage
 
