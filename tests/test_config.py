@@ -43,6 +43,12 @@ def test_settings_defaults(tmp_home: Path, set_platform) -> None:
     assert settings.embed_thumbnail is True
     assert settings.write_subs is False
     assert settings.playlist_limit is None
+    assert settings.resolve_audio_compat is True  # default on for Linux
+
+
+def test_settings_resolve_audio_compat_defaults_off_on_macos(tmp_home: Path, set_platform) -> None:
+    set_platform("darwin")
+    assert config.Settings().resolve_audio_compat is False
 
 
 def test_load_settings_missing_file_returns_defaults(tmp_home: Path, set_platform) -> None:

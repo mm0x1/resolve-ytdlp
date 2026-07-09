@@ -70,6 +70,47 @@ def test_resolve_format_selector_unknown_preset_raises() -> None:
         formats.resolve_format_selector(settings)
 
 
+# --- custom_format_selector_for ---
+
+
+def _fmt(**overrides) -> formats.FormatInfo:
+    fields = dict(
+        format_id="400",
+        ext="mp4",
+        resolution="1920x1080",
+        vcodec="av01.0.08M.08",
+        acodec="none",
+        filesize=None,
+        format_note=None,
+    )
+    fields.update(overrides)
+    return formats.FormatInfo(**fields)
+
+
+def test_custom_format_selector_pairs_video_only_format_with_m4a_audio() -> None:
+    fmt = _fmt(vcodec="av01.0.08M.08", acodec="none")
+
+    assert formats.custom_format_selector_for(fmt) == "400+ba[ext=m4a]/ba"
+
+
+def test_custom_format_selector_leaves_muxed_format_alone() -> None:
+    fmt = _fmt(format_id="18", vcodec="avc1.42001E", acodec="mp4a.40.2")
+
+    assert formats.custom_format_selector_for(fmt) == "18"
+
+
+def test_custom_format_selector_leaves_audio_only_format_alone() -> None:
+    fmt = _fmt(format_id="140", vcodec="none", acodec="mp4a.40.2")
+
+    assert formats.custom_format_selector_for(fmt) == "140"
+
+
+def test_custom_format_selector_treats_none_codec_like_literal_none_string() -> None:
+    fmt = _fmt(vcodec="av01.0.08M.08", acodec=None)
+
+    assert formats.custom_format_selector_for(fmt) == "400+ba[ext=m4a]/ba"
+
+
 # --- build_download_argv ---
 
 
@@ -99,6 +140,23 @@ def test_build_download_argv_includes_extra_args_for_audio_preset() -> None:
     assert "--extract-audio" in argv
     assert "--audio-format" in argv
     assert argv[argv.index("--audio-format") + 1] == "mp3"
+
+
+def test_build_audio_transcode_argv_copies_video_and_reencodes_audio() -> None:
+    ffmpeg = Path("/usr/bin/ffmpeg")
+    source = Path("/downloads/Clip [id].mp4")
+    dest = Path("/downloads/Clip [id].rytdlp-compat.mp4")
+
+    argv = formats.build_audio_transcode_argv(_deps(ffmpeg), source, dest)
+
+    assert argv[0] == str(ffmpeg)
+    assert argv[argv.index("-i") + 1] == str(source)
+    assert argv[-1] == str(dest)
+    # Video (and everything) copied; only audio re-encoded to 16-bit FLAC.
+    assert argv[argv.index("-c") + 1] == "copy"
+    assert argv[argv.index("-c:a") + 1] == formats.RESOLVE_AUDIO_CODEC == "flac"
+    # 16-bit specifically: 24-bit FLAC imports silent in Resolve on Linux.
+    assert argv[argv.index("-sample_fmt") + 1] == formats.RESOLVE_AUDIO_SAMPLE_FMT == "s16"
 
 
 def test_build_download_argv_ffmpeg_location_included_when_set() -> None:

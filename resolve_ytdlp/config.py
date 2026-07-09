@@ -61,6 +61,12 @@ class Settings:
     write_subs: bool = False
     sub_langs: str = "en"
     playlist_limit: int | None = None
+    #: Re-encode a finished download's audio to FLAC so DaVinci Resolve on Linux
+    #: can decode it. Resolve on Linux (Free *and* Studio) can't decode AAC or
+    #: Opus — such files import with silent audio — so this defaults on for
+    #: Linux and off for macOS (where Resolve decodes AAC natively). See
+    #: `downloader.transcode_audio_for_resolve`.
+    resolve_audio_compat: bool = field(default_factory=lambda: not _is_macos())
 
 
 def load_settings() -> Settings:

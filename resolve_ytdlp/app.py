@@ -97,32 +97,25 @@ def bootstrap(
 
 
 class ImportCoordinator:
-    """Tracks the last-seen `filename` from a `downloader` events stream.
+    """Extracts the final imported file's path from a completed download.
 
-    Yields a `Path` exactly once per completed (`"done"`) download. Assumes a
-    single in-flight download at a time (per `downloader.py`'s own
-    single-active-download model) — events for two different downloads never
-    interleave.
+    The definitive final path (post-merge/post-postprocessing) arrives
+    directly on a `"done"` `TerminalEvent.filename`, populated from yt-dlp's
+    `--print after_move:...` hook (`formats.build_download_argv`,
+    `downloader.parse_final_filename_line`) — not tracked here. Deliberately
+    stateless: an earlier version tracked the last-seen `ProgressEvent.filename`
+    instead, which named whichever stream (e.g. a `bv*+ba` selector's separate
+    video/audio) was downloaded most recently rather than the merged output —
+    confirmed wrong via a real Resolve session where auto-import tried to
+    decode an already-deleted intermediate `.m4a` audio stream file.
     """
-
-    def __init__(self) -> None:
-        self._last_filename: str | None = None
 
     def observe(self, event: ProgressEvent | TerminalEvent) -> Path | None:
         if isinstance(event, ProgressEvent):
-            if event.filename:
-                self._last_filename = event.filename
             return None
-
-        if event.status != "done":
-            self._last_filename = None
+        if event.status != "done" or event.filename is None:
             return None
-
-        filename = self._last_filename
-        self._last_filename = None
-        if filename is None:
-            return None
-        return Path(filename)
+        return Path(event.filename)
 
 
 def handle_event(
@@ -130,10 +123,21 @@ def handle_event(
 ) -> ImportResult | None:
     """Auto-import a just-finished download into the `yt-dlp` bin, if enabled.
 
-    A no-op (no bridge calls) unless `coordinator.observe(event)` yields a
-    path *and* `ctx.settings.auto_import` is `True`. Logs (does not raise)
-    when no project is open or the import is partial/total failure.
+    A no-op for imports (no bridge calls) unless `coordinator.observe(event)`
+    yields a path *and* `ctx.settings.auto_import` is `True`. Logs (does not
+    raise) when no project is open or the import is partial/total failure.
+
+    Failed (`"error"`) and canceled (`"canceled"`) downloads are logged too, so
+    the failure leaves a trace in the log file rather than being visible only in
+    the transient in-window status label. yt-dlp's captured stderr rides along
+    on `TerminalEvent.message`.
     """
+    if isinstance(event, TerminalEvent):
+        if event.status == "error":
+            ctx.logger.error("Download failed: %s", event.message or "unknown error")
+        elif event.status == "canceled":
+            ctx.logger.info("Download canceled.")
+
     path = coordinator.observe(event)
     if path is None or not ctx.settings.auto_import:
         return None

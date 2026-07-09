@@ -175,11 +175,10 @@ def test_coordinator_returns_none_for_progress_event() -> None:
     assert coordinator.observe(_progress_event(filename="a.mp4")) is None
 
 
-def test_coordinator_returns_path_on_done_after_filename_seen() -> None:
+def test_coordinator_returns_path_on_done_with_filename() -> None:
     coordinator = app.ImportCoordinator()
 
-    coordinator.observe(_progress_event(filename="a.mp4"))
-    result = coordinator.observe(_terminal_event("done"))
+    result = coordinator.observe(_terminal_event("done", filename="a.mp4"))
 
     assert result == Path("a.mp4")
 
@@ -192,45 +191,20 @@ def test_coordinator_returns_none_on_done_without_filename() -> None:
     assert result is None
 
 
-def test_coordinator_clears_state_on_error() -> None:
+def test_coordinator_returns_none_on_error_even_with_filename() -> None:
     coordinator = app.ImportCoordinator()
 
-    coordinator.observe(_progress_event(filename="a.mp4"))
-    coordinator.observe(_terminal_event("error", message="boom"))
-    result = coordinator.observe(_terminal_event("done"))
+    result = coordinator.observe(_terminal_event("error", message="boom", filename="a.mp4"))
 
     assert result is None
 
 
-def test_coordinator_clears_state_on_canceled() -> None:
+def test_coordinator_returns_none_on_canceled_even_with_filename() -> None:
     coordinator = app.ImportCoordinator()
 
-    coordinator.observe(_progress_event(filename="a.mp4"))
-    coordinator.observe(_terminal_event("canceled"))
-    result = coordinator.observe(_terminal_event("done"))
+    result = coordinator.observe(_terminal_event("canceled", filename="a.mp4"))
 
     assert result is None
-
-
-def test_coordinator_does_not_yield_same_path_twice() -> None:
-    coordinator = app.ImportCoordinator()
-
-    coordinator.observe(_progress_event(filename="a.mp4"))
-    first = coordinator.observe(_terminal_event("done"))
-    second = coordinator.observe(_terminal_event("done"))
-
-    assert first == Path("a.mp4")
-    assert second is None
-
-
-def test_coordinator_progress_with_none_filename_does_not_overwrite() -> None:
-    coordinator = app.ImportCoordinator()
-
-    coordinator.observe(_progress_event(filename="a.mp4"))
-    coordinator.observe(_progress_event(filename=None))
-    result = coordinator.observe(_terminal_event("done"))
-
-    assert result == Path("a.mp4")
 
 
 # -- handle_event ------------------------------------------------------------
@@ -256,12 +230,11 @@ def test_handle_event_imports_on_completed_download(make_fake_resolve_app) -> No
     ctx = _make_ctx(fake_app)
     coordinator = app.ImportCoordinator()
 
-    coordinator.observe(_progress_event(filename="a.mp4"))
-    result = app.handle_event(ctx, coordinator, _terminal_event("done"))
+    result = app.handle_event(ctx, coordinator, _terminal_event("done", filename="a.mp4"))
 
     assert result is not None
     assert result.ok is True
-    assert fake_app.GetMediaPool().call_log == ["SetCurrentFolder", "ImportMedia"]
+    assert fake_app.media_pool.call_log == ["SetCurrentFolder", "ImportMedia"]
 
 
 def test_handle_event_skips_when_auto_import_false(make_fake_resolve_app) -> None:
@@ -269,11 +242,10 @@ def test_handle_event_skips_when_auto_import_false(make_fake_resolve_app) -> Non
     ctx = _make_ctx(fake_app, auto_import=False)
     coordinator = app.ImportCoordinator()
 
-    coordinator.observe(_progress_event(filename="a.mp4"))
-    result = app.handle_event(ctx, coordinator, _terminal_event("done"))
+    result = app.handle_event(ctx, coordinator, _terminal_event("done", filename="a.mp4"))
 
     assert result is None
-    assert fake_app.GetMediaPool().call_log == []
+    assert fake_app.media_pool.call_log == []
 
 
 def test_handle_event_noop_on_progress_event(make_fake_resolve_app) -> None:
@@ -284,31 +256,52 @@ def test_handle_event_noop_on_progress_event(make_fake_resolve_app) -> None:
     result = app.handle_event(ctx, coordinator, _progress_event(filename="a.mp4"))
 
     assert result is None
-    assert fake_app.GetMediaPool().call_log == []
+    assert fake_app.media_pool.call_log == []
 
 
-def test_handle_event_noop_on_error_terminal_event(make_fake_resolve_app) -> None:
+def test_handle_event_noop_on_error_terminal_event(
+    make_fake_resolve_app, caplog: pytest.LogCaptureFixture
+) -> None:
     fake_app = make_fake_resolve_app()
     ctx = _make_ctx(fake_app)
     coordinator = app.ImportCoordinator()
 
-    coordinator.observe(_progress_event(filename="a.mp4"))
-    result = app.handle_event(ctx, coordinator, _terminal_event("error", message="boom"))
+    with caplog.at_level(logging.ERROR, logger="resolve_ytdlp.test"):
+        result = app.handle_event(
+            ctx, coordinator, _terminal_event("error", message="boom", filename="a.mp4")
+        )
 
     assert result is None
-    assert fake_app.GetMediaPool().call_log == []
+    assert fake_app.media_pool.call_log == []
+    assert "boom" in caplog.text
 
 
-def test_handle_event_noop_on_canceled_terminal_event(make_fake_resolve_app) -> None:
+def test_handle_event_logs_error_with_fallback_when_message_missing(
+    make_fake_resolve_app, caplog: pytest.LogCaptureFixture
+) -> None:
     fake_app = make_fake_resolve_app()
     ctx = _make_ctx(fake_app)
     coordinator = app.ImportCoordinator()
 
-    coordinator.observe(_progress_event(filename="a.mp4"))
-    result = app.handle_event(ctx, coordinator, _terminal_event("canceled"))
+    with caplog.at_level(logging.ERROR, logger="resolve_ytdlp.test"):
+        app.handle_event(ctx, coordinator, _terminal_event("error", message=None))
+
+    assert "unknown error" in caplog.text
+
+
+def test_handle_event_noop_on_canceled_terminal_event(
+    make_fake_resolve_app, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_app = make_fake_resolve_app()
+    ctx = _make_ctx(fake_app)
+    coordinator = app.ImportCoordinator()
+
+    with caplog.at_level(logging.INFO, logger="resolve_ytdlp.test"):
+        result = app.handle_event(ctx, coordinator, _terminal_event("canceled", filename="a.mp4"))
 
     assert result is None
-    assert fake_app.GetMediaPool().call_log == []
+    assert fake_app.media_pool.call_log == []
+    assert "canceled" in caplog.text.lower()
 
 
 def test_handle_event_logs_warning_when_no_project_open(make_fake_resolve_app) -> None:
@@ -316,8 +309,7 @@ def test_handle_event_logs_warning_when_no_project_open(make_fake_resolve_app) -
     ctx = _make_ctx(fake_app)
     coordinator = app.ImportCoordinator()
 
-    coordinator.observe(_progress_event(filename="a.mp4"))
-    result = app.handle_event(ctx, coordinator, _terminal_event("done"))
+    result = app.handle_event(ctx, coordinator, _terminal_event("done", filename="a.mp4"))
 
     assert result is None
 
@@ -327,8 +319,7 @@ def test_handle_event_logs_warning_on_partial_import_failure(make_fake_resolve_a
     ctx = _make_ctx(fake_app)
     coordinator = app.ImportCoordinator()
 
-    coordinator.observe(_progress_event(filename="a.mp4"))
-    result = app.handle_event(ctx, coordinator, _terminal_event("done"))
+    result = app.handle_event(ctx, coordinator, _terminal_event("done", filename="a.mp4"))
 
     assert result is not None
     assert result.ok is False

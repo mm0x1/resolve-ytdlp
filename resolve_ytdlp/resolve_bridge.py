@@ -8,6 +8,7 @@ import is lazy, inside `connect()`, not at module level.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -65,12 +66,24 @@ class ResolveBridge:
         """
         return self._bmd_module
 
+    def _current_media_pool(self) -> Any | None:
+        """`GetMediaPool()` lives on `Project`, not the top-level `resolve` app —
+        confirmed via a real-Resolve traceback (`'NoneType' object is not
+        callable` calling `GetMediaPool()` directly on the app object). Reach it
+        through `GetProjectManager().GetCurrentProject()`; `None` at either hop
+        means no project is open.
+        """
+        project = self._resolve_app.GetProjectManager().GetCurrentProject()
+        if not project:
+            return None
+        return project.GetMediaPool()
+
     def get_or_create_bin(self, settings: Settings) -> Any | None:
         """Reuse-or-create the single yt-dlp media-pool bin (decisions.md Q6/Q11).
 
-        Returns `None` if no project is open (`GetMediaPool()` returns falsy).
+        Returns `None` if no project is open (`_current_media_pool()` returns falsy).
         """
-        media_pool = self._resolve_app.GetMediaPool()
+        media_pool = self._current_media_pool()
         if not media_pool:
             return None
 
@@ -88,7 +101,7 @@ class ResolveBridge:
         `get_or_create_bin` guard; not re-checked here, per this repo's
         explicit-boundaries convention.
         """
-        media_pool = self._resolve_app.GetMediaPool()
+        media_pool = self._current_media_pool()
         media_pool.SetCurrentFolder(bin_folder)
         imported = media_pool.ImportMedia([str(path) for path in paths])
         return ImportResult(requested=len(paths), imported=len(imported or []))
@@ -97,10 +110,25 @@ class ResolveBridge:
 def connect() -> ResolveBridge | None:
     """Bootstrap the connection to Resolve's embedded scripting API.
 
+    Scripts launched from Resolve's own Scripts menu run in a `__main__` that
+    Resolve pre-populates with a already-connected `resolve` global (and
+    `bmd`, `fusion`, `fu`) — confirmed empirically against a real Resolve
+    install. `DaVinciResolveScript` itself isn't even importable in that
+    context (not on `sys.path`); that module + `scriptapp("Resolve")` is only
+    the documented bootstrap for scripts launched *outside* Resolve (a plain
+    terminal `python`), where `RESOLVE_SCRIPT_API`/`PYTHONPATH` are set up.
+    This checks the pre-populated global first and falls back to the
+    external-script path for that case.
+
     Deliberately thin: this is the one code path that can't be exercised
-    against the real API in CI. Returns `None` (never raises) when
-    `DaVinciResolveScript` can't be imported or `scriptapp("Resolve")` fails.
+    against the real API in CI. Returns `None` (never raises) when neither
+    route yields a connected `resolve` app object.
     """
+    main_globals = getattr(sys.modules.get("__main__"), "__dict__", {})
+    resolve_app = main_globals.get("resolve")
+    if resolve_app:
+        return ResolveBridge(resolve_app, bmd_module=main_globals.get("bmd"))
+
     try:
         import DaVinciResolveScript as bmd  # type: ignore[import-not-found]
     except ImportError:

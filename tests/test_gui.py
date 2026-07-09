@@ -142,6 +142,16 @@ def test_settings_from_fields_empty_dict_returns_current_unchanged() -> None:
     assert result == current
 
 
+def test_resolve_audio_compat_round_trips_through_fields() -> None:
+    current = Settings(resolve_audio_compat=True)
+
+    fields = gui.fields_from_settings(current)
+    assert fields["resolve_audio_compat"] is True
+
+    result = gui.settings_from_fields(current, {"resolve_audio_compat": False})
+    assert result.resolve_audio_compat is False
+
+
 def test_settings_from_fields_normalizes_empty_custom_format_to_none() -> None:
     current = Settings(custom_format="bv+ba")
 

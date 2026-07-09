@@ -2,12 +2,40 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 import pytest
 
 from resolve_ytdlp import deps as deps_module
+
+
+@pytest.fixture(autouse=True)
+def _isolate_resolve_ytdlp_logger():
+    """Snapshot and restore the process-global ``resolve_ytdlp`` logger per test.
+
+    ``app.configure_logging`` mutates this singleton — it attaches a rotating
+    file handler and sets ``propagate = False``. Left un-restored, that state
+    leaks into later tests: in particular, disabled propagation stops pytest's
+    ``caplog`` (whose handler sits on the root logger) from capturing records
+    emitted by the ``resolve_ytdlp.test`` child logger, so log-assertion tests
+    fail depending on execution order.
+    """
+    logger = logging.getLogger("resolve_ytdlp")
+    saved_handlers = logger.handlers[:]
+    saved_level = logger.level
+    saved_propagate = logger.propagate
+    try:
+        yield
+    finally:
+        for handler in logger.handlers[:]:
+            if handler not in saved_handlers:
+                logger.removeHandler(handler)
+                handler.close()
+        logger.handlers[:] = saved_handlers
+        logger.setLevel(saved_level)
+        logger.propagate = saved_propagate
 
 _FAKE_YTDLP_TEMPLATE = """\
 #!/usr/bin/env python3
@@ -191,15 +219,41 @@ class FakeMediaPool:
         return paths[: len(paths) - missing]
 
 
-class FakeResolveApp:
-    """Stand-in for the top-level `resolve` app object. `media_pool=None` models
-    "no project open" (`GetMediaPool()` returning falsy)."""
+class FakeProject:
+    """Stand-in for a Resolve `Project`: exposes `GetMediaPool()`."""
 
-    def __init__(self, media_pool: FakeMediaPool | None) -> None:
+    def __init__(self, media_pool: FakeMediaPool) -> None:
         self._media_pool = media_pool
 
-    def GetMediaPool(self) -> FakeMediaPool | None:
+    def GetMediaPool(self) -> FakeMediaPool:
         return self._media_pool
+
+
+class FakeProjectManager:
+    """Stand-in for a Resolve `ProjectManager`: exposes `GetCurrentProject()`."""
+
+    def __init__(self, project: FakeProject | None) -> None:
+        self._project = project
+
+    def GetCurrentProject(self) -> FakeProject | None:
+        return self._project
+
+
+class FakeResolveApp:
+    """Stand-in for the top-level `resolve` app object. `project=None` models
+    "no project open" (`GetCurrentProject()` returning falsy), matching the
+    real API's `GetProjectManager().GetCurrentProject().GetMediaPool()` chain.
+
+    `media_pool` is exposed directly (not just through the real-shaped chain)
+    so tests can assert against it without repeating the chain everywhere.
+    """
+
+    def __init__(self, project: FakeProject | None) -> None:
+        self._project_manager = FakeProjectManager(project)
+        self.media_pool = project.GetMediaPool() if project else None
+
+    def GetProjectManager(self) -> FakeProjectManager:
+        return self._project_manager
 
 
 @pytest.fixture
@@ -220,7 +274,7 @@ def make_fake_resolve_app():
         import_media_missing: int = 0,
     ) -> FakeResolveApp:
         if no_project:
-            return FakeResolveApp(media_pool=None)
+            return FakeResolveApp(project=None)
 
         media_pool = FakeMediaPool(
             add_subfolder_fails=add_subfolder_fails,
@@ -228,6 +282,6 @@ def make_fake_resolve_app():
         )
         for name in existing_bins or []:
             media_pool.root.subfolders.append(FakeFolder(name))
-        return FakeResolveApp(media_pool)
+        return FakeResolveApp(FakeProject(media_pool))
 
     return _make

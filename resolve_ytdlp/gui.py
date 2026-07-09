@@ -9,10 +9,32 @@ real Resolve session (decisions.md's confirmed bootstrap sequence:
 `ui = resolve.Fusion().UIManager`, `disp = bmd.UIDispatcher(ui)`,
 `disp.AddWindow({...}, ui.VGroup([...]))`, events via `win.On[id].Clicked`,
 pump via `disp.StepLoop(False)` + `ExitLoop`). Widget kinds beyond the
-session-confirmed `Label`/`Button`/`TextEdit`/`HGroup`/`VGroup` (`CheckBox`,
-`ComboBox`, `LineEdit`) are standard in Resolve's Fusion UI toolkit but were
-not independently re-verified this session — flag if they don't match the
-real API.
+session-confirmed `Label`/`Button`/`HGroup`/`VGroup`/`CheckBox`/`ComboBox`
+are standard in Resolve's Fusion UI toolkit but were not independently
+re-verified this session — flag if they don't match the real API. In
+particular the UI-polish pass moved every single-line text input to
+`LineEdit` (`UrlField`, `CustomFormatField`, `SubLangsField`,
+`DownloadDirField`, `PlaylistLimitField`) — read/written via `.Text` (not
+`TextEdit`'s `.PlainText`), so `TextEdit` is no longer used at all. That pass
+also newly relies on the two-arg group form (`ui.VGroup({attrs}, [children])`)
+and the widget attributes `Weight`, `StyleSheet`, `PlaceholderText`, and
+`MinimumSize` — all standard Qt/Fusion but unverified in a live session here;
+flag if a real Resolve session shows a stretched/mis-laid-out window or a
+`LineEdit` whose text doesn't round-trip. `FormatsCombo.Clear()` (used to
+reset the list on a re-fetch) is a similarly unverified assumption about
+`ComboBox`'s API — flag if it's not the right method name.
+
+`build_window` deliberately omits `Geometry`'s `x, y` and only sets
+`MinimumSize` — community reports (steakunderwater's UIManager thread) say
+an absolute `Geometry` `[x, y, w, h]` places the window in screen-global
+coordinates (confirmed the hard way: on a multi-monitor Linux box where the
+secondary monitor happens to sit at the coordinate-space origin, `[100, 100,
+...]` always opened the window on the wrong monitor, regardless of which one
+Resolve itself was on), whereas omitting position lets Fusion/Qt center the
+new window over the main Resolve window instead — monitor-layout-agnostic by
+construction. Unverified beyond that community report; flag if a real
+session shows the window appearing somewhere unexpected (e.g. screen
+top-left) instead of centered over Resolve.
 
 Stdlib only — this module runs inside Resolve's embedded Python interpreter.
 """
@@ -29,7 +51,7 @@ from resolve_ytdlp import config, downloader
 from resolve_ytdlp.app import AppContext, ImportCoordinator
 from resolve_ytdlp.config import Settings
 from resolve_ytdlp.downloader import DownloaderError, ProgressEvent, TerminalEvent
-from resolve_ytdlp.formats import ProbeResult
+from resolve_ytdlp.formats import ProbeResult, custom_format_selector_for
 
 WINDOW_ID = "ResolveYtdlpWindow"
 PUMP_SLEEP_SECONDS = 0.05
@@ -112,6 +134,7 @@ def fields_from_settings(settings: Settings) -> dict[str, Any]:
         "write_subs": settings.write_subs,
         "sub_langs": settings.sub_langs,
         "playlist_limit": "" if settings.playlist_limit is None else str(settings.playlist_limit),
+        "resolve_audio_compat": settings.resolve_audio_compat,
     }
 
 
@@ -135,6 +158,7 @@ def settings_from_fields(current: Settings, fields: dict[str, Any]) -> Settings:
         "embed_thumbnail",
         "write_subs",
         "sub_langs",
+        "resolve_audio_compat",
     ):
         if key in fields:
             updates[key] = fields[key]
@@ -190,50 +214,83 @@ def build_window(ctx: AppContext) -> Any:
 
     preset_items = list(FORMAT_PRESET_LABELS.keys())
 
-    win = disp.AddWindow(
-        {
-            "ID": WINDOW_ID,
-            "WindowTitle": "Download from URL (yt-dlp)",
-            "Geometry": [100, 100, 480, 640],
-        },
-        ui.VGroup(
+    def header(text: str) -> Any:
+        """A bold section divider (`Weight: 0` so it never steals vertical slack)."""
+        return ui.Label({"Text": text, "Weight": 0, "StyleSheet": "font-weight: bold;"})
+
+    def label(text: str) -> Any:
+        return ui.Label({"Text": text, "Weight": 0})
+
+    # Row groups are all `Weight: 0` so they stay their natural height; the lone
+    # trailing spacer (`Weight: 1`) absorbs any extra vertical space, keeping the
+    # form top-aligned instead of stretching every row.
+    body: list[Any] = []
+
+    if ctx.startup_problems:
+        body.append(
+            ui.Label(
+                {
+                    "ID": "StartupProblems",
+                    "Text": "\n".join(ctx.startup_problems),
+                    "Weight": 0,
+                    "StyleSheet": "color: #e0a13c;",
+                }
+            )
+        )
+
+    body += [
+        label("URL"),
+        ui.LineEdit(
+            {
+                "ID": "UrlField",
+                "Text": "",
+                "Weight": 0,
+                "PlaceholderText": "Paste a video or playlist URL",
+            }
+        ),
+        header("Format"),
+        ui.HGroup(
+            {"Weight": 0},
             [
-                ui.Label({"ID": "StartupProblems", "Text": "\n".join(ctx.startup_problems)}),
-                ui.TextEdit({"ID": "UrlField", "PlainText": ""}),
-                ui.HGroup(
-                    [
-                        ui.ComboBox({"ID": "PresetCombo"}),
-                        ui.TextEdit(
-                            {"ID": "CustomFormatField", "PlainText": initial["custom_format"]}
-                        ),
-                    ]
+                ui.VGroup(
+                    {"Weight": 1},
+                    [label("Preset"), ui.ComboBox({"ID": "PresetCombo", "Weight": 0})],
                 ),
-                ui.HGroup(
+                ui.VGroup(
+                    {"Weight": 2},
                     [
-                        ui.CheckBox(
-                            {"ID": "FetchFormatsCheckBox", "Text": "Show available formats"}
-                        ),
-                        ui.Button({"ID": "FetchFormatsButton", "Text": "Fetch formats"}),
-                    ]
-                ),
-                ui.TextEdit({"ID": "FormatsDisplay", "PlainText": "", "ReadOnly": True}),
-                ui.HGroup(
-                    [
-                        ui.CheckBox(
+                        label("Custom format (yt-dlp -f)"),
+                        ui.LineEdit(
                             {
-                                "ID": "WriteSubsCheckBox",
-                                "Text": "Subtitles",
-                                "Checked": initial["write_subs"],
+                                "ID": "CustomFormatField",
+                                "Text": initial["custom_format"],
+                                "Weight": 0,
+                                "PlaceholderText": "override, e.g. bv*+ba / best",
                             }
                         ),
-                        ui.TextEdit({"ID": "SubLangsField", "PlainText": initial["sub_langs"]}),
-                    ]
+                    ],
                 ),
+            ],
+        ),
+        label("Available formats"),
+        ui.HGroup(
+            {"Weight": 0},
+            [
+                ui.Button({"ID": "FetchFormatsButton", "Text": "Fetch", "Weight": 0}),
+                ui.ComboBox({"ID": "FormatsCombo", "Weight": 1}),
+                ui.Button({"ID": "UseFormatButton", "Text": "Use", "Weight": 0}),
+            ],
+        ),
+        header("Options"),
+        ui.HGroup(
+            {"Weight": 0},
+            [
                 ui.CheckBox(
                     {
                         "ID": "EmbedMetadataCheckBox",
                         "Text": "Embed metadata",
                         "Checked": initial["embed_metadata"],
+                        "Weight": 1,
                     }
                 ),
                 ui.CheckBox(
@@ -241,30 +298,101 @@ def build_window(ctx: AppContext) -> Any:
                         "ID": "EmbedThumbnailCheckBox",
                         "Text": "Embed thumbnail",
                         "Checked": initial["embed_thumbnail"],
+                        "Weight": 1,
                     }
                 ),
-                ui.TextEdit({"ID": "DownloadDirField", "PlainText": initial["download_dir"]}),
-                ui.TextEdit(
-                    {"ID": "PlaylistLimitField", "PlainText": initial["playlist_limit"]}
+            ],
+        ),
+        ui.HGroup(
+            {"Weight": 0},
+            [
+                ui.CheckBox(
+                    {
+                        "ID": "WriteSubsCheckBox",
+                        "Text": "Subtitles",
+                        "Checked": initial["write_subs"],
+                        "Weight": 0,
+                    }
                 ),
+                label("Languages"),
+                ui.LineEdit(
+                    {
+                        "ID": "SubLangsField",
+                        "Text": initial["sub_langs"],
+                        "Weight": 1,
+                        "PlaceholderText": "en",
+                    }
+                ),
+            ],
+        ),
+        ui.HGroup(
+            {"Weight": 0},
+            [
                 ui.CheckBox(
                     {
                         "ID": "AutoImportCheckBox",
                         "Text": "Auto-import into the yt-dlp bin",
                         "Checked": initial["auto_import"],
+                        "Weight": 1,
                     }
                 ),
-                ui.HGroup(
-                    [
-                        ui.Button({"ID": "DownloadButton", "Text": "Download"}),
-                        ui.Button({"ID": "CancelButton", "Text": "Cancel"}),
-                    ]
+                ui.CheckBox(
+                    {
+                        "ID": "ResolveAudioCompatCheckBox",
+                        "Text": "Resolve-compatible audio (FLAC, Linux)",
+                        "Checked": initial["resolve_audio_compat"],
+                        "Weight": 1,
+                    }
                 ),
-                ui.Label({"ID": "ProgressLabel", "Text": ""}),
-                ui.Label({"ID": "StatusLabel", "Text": ""}),
-                ui.TextEdit({"ID": "LogText", "PlainText": "", "ReadOnly": True}),
-            ]
+            ],
         ),
+        header("Destination"),
+        label("Download folder"),
+        ui.LineEdit(
+            {"ID": "DownloadDirField", "Text": initial["download_dir"], "Weight": 0}
+        ),
+        ui.HGroup(
+            {"Weight": 0},
+            [
+                label("Playlist item limit"),
+                ui.LineEdit(
+                    {
+                        "ID": "PlaylistLimitField",
+                        "Text": initial["playlist_limit"],
+                        "Weight": 0,
+                        "MinimumSize": [80, 0],
+                        "PlaceholderText": "all",
+                    }
+                ),
+                ui.Label({"Text": "", "Weight": 1}),
+            ],
+        ),
+        ui.HGroup(
+            {"Weight": 0},
+            [
+                ui.Button(
+                    {
+                        "ID": "DownloadButton",
+                        "Text": "Download",
+                        "Weight": 1,
+                        "StyleSheet": "font-weight: bold;",
+                    }
+                ),
+                ui.Button({"ID": "CancelButton", "Text": "Cancel", "Weight": 1}),
+            ],
+        ),
+        ui.Label({"ID": "ProgressLabel", "Text": "", "Weight": 0}),
+        ui.Label({"ID": "StatusLabel", "Text": "", "Weight": 0}),
+        ui.Label({"Text": "", "Weight": 1}),
+    ]
+
+    win = disp.AddWindow(
+        {
+            "ID": WINDOW_ID,
+            "WindowTitle": "Download from URL (yt-dlp)",
+            "MinimumSize": [520, 540],
+        },
+        ui.VGroup(body),
     )
 
     items = win.GetItems()
@@ -283,14 +411,15 @@ def _read_fields(items: dict[str, Any]) -> dict[str, Any]:
     format_preset = preset_keys[preset_index] if 0 <= preset_index < len(preset_keys) else None
 
     fields: dict[str, Any] = {
-        "download_dir": items["DownloadDirField"].PlainText,
-        "custom_format": items["CustomFormatField"].PlainText,
+        "download_dir": items["DownloadDirField"].Text,
+        "custom_format": items["CustomFormatField"].Text,
         "write_subs": items["WriteSubsCheckBox"].Checked,
-        "sub_langs": items["SubLangsField"].PlainText,
+        "sub_langs": items["SubLangsField"].Text,
         "embed_metadata": items["EmbedMetadataCheckBox"].Checked,
         "embed_thumbnail": items["EmbedThumbnailCheckBox"].Checked,
-        "playlist_limit": items["PlaylistLimitField"].PlainText,
+        "playlist_limit": items["PlaylistLimitField"].Text,
         "auto_import": items["AutoImportCheckBox"].Checked,
+        "resolve_audio_compat": items["ResolveAudioCompatCheckBox"].Checked,
     }
     if format_preset is not None:
         fields["format_preset"] = format_preset
@@ -312,7 +441,12 @@ def run(ctx: AppContext) -> None:
 
     coordinator = ImportCoordinator()
     events: queue.Queue[ProgressEvent | TerminalEvent] = queue.Queue()
-    state: dict[str, Any] = {"closed": False, "runner": None, "pending_probe": None}
+    state: dict[str, Any] = {
+        "closed": False,
+        "runner": None,
+        "pending_probe": None,
+        "fetched_formats": [],
+    }
 
     def _set_status(text: str) -> None:
         items["StatusLabel"].Text = text
@@ -344,7 +478,7 @@ def run(ctx: AppContext) -> None:
 
         settings = _current_settings()
         config.save_settings(settings)
-        url = items["UrlField"].PlainText
+        url = items["UrlField"].Text
 
         try:
             probe = downloader.run_probe(ctx.deps, url)
@@ -361,7 +495,7 @@ def run(ctx: AppContext) -> None:
             _start_download(settings, url)
 
     def on_fetch_formats_clicked(_event: Any) -> None:
-        url = items["UrlField"].PlainText
+        url = items["UrlField"].Text
         try:
             probe = downloader.run_probe(ctx.deps, url)
         except DownloaderError as exc:
@@ -369,11 +503,20 @@ def run(ctx: AppContext) -> None:
             _set_status(f"Could not fetch formats: {exc}")
             return
 
-        lines = [
-            f"{fmt.format_id}\t{fmt.ext}\t{fmt.resolution or '-'}\t{fmt.format_note or ''}"
+        state["fetched_formats"] = probe.formats
+        labels = [
+            f"{fmt.format_id}  {fmt.ext}  {fmt.resolution or '-'}  {fmt.format_note or ''}"
             for fmt in probe.formats
         ]
-        items["FormatsDisplay"].PlainText = "\n".join(lines)
+        items["FormatsCombo"].Clear()
+        items["FormatsCombo"].AddItems(labels)
+
+    def on_use_format_clicked(_event: Any) -> None:
+        fetched_formats = state["fetched_formats"]
+        index = items["FormatsCombo"].CurrentIndex
+        if not (0 <= index < len(fetched_formats)):
+            return
+        items["CustomFormatField"].Text = custom_format_selector_for(fetched_formats[index])
 
     def on_cancel_clicked(_event: Any) -> None:
         if state.get("pending_probe") is not None:
@@ -392,6 +535,7 @@ def run(ctx: AppContext) -> None:
     win.On["DownloadButton"].Clicked = on_download_clicked
     win.On["CancelButton"].Clicked = on_cancel_clicked
     win.On["FetchFormatsButton"].Clicked = on_fetch_formats_clicked
+    win.On["UseFormatButton"].Clicked = on_use_format_clicked
 
     win.Show()
 

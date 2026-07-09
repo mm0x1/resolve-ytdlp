@@ -17,20 +17,20 @@ def test_get_or_create_bin_creates_new_bin_when_none_exists(make_fake_resolve_ap
 
     assert bin_folder is not None
     assert bin_folder.GetName() == "yt-dlp"
-    assert app.GetMediaPool().add_subfolder_calls == 1
-    assert bin_folder in app.GetMediaPool().root.GetSubFolderList()
+    assert app.media_pool.add_subfolder_calls == 1
+    assert bin_folder in app.media_pool.root.GetSubFolderList()
 
 
 def test_get_or_create_bin_reuses_existing_bin_without_creating(make_fake_resolve_app) -> None:
     app = make_fake_resolve_app(existing_bins=["yt-dlp"])
     bridge = resolve_bridge.ResolveBridge(app)
     settings = Settings(bin_name="yt-dlp")
-    existing = app.GetMediaPool().root.GetSubFolderList()[0]
+    existing = app.media_pool.root.GetSubFolderList()[0]
 
     bin_folder = bridge.get_or_create_bin(settings)
 
     assert bin_folder is existing
-    assert app.GetMediaPool().add_subfolder_calls == 0
+    assert app.media_pool.add_subfolder_calls == 0
 
 
 def test_get_or_create_bin_returns_none_when_no_project_open(make_fake_resolve_app) -> None:
@@ -51,7 +51,7 @@ def test_import_media_calls_set_current_folder_before_import(
     make_fake_resolve_app, tmp_path
 ) -> None:
     app = make_fake_resolve_app()
-    media_pool = app.GetMediaPool()
+    media_pool = app.media_pool
     bridge = resolve_bridge.ResolveBridge(app)
     bin_folder = bridge.get_or_create_bin(Settings(bin_name="yt-dlp"))
     path = tmp_path / "video.mp4"

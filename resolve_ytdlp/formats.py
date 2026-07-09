@@ -23,6 +23,19 @@ from resolve_ytdlp.deps import ResolvedDeps
 DL_SENTINEL = "RYTDLP_DL_JSON:"
 PP_SENTINEL = "RYTDLP_PP_JSON:"
 
+# Prefixes yt-dlp's `--print after_move:...` output: the definitive final file
+# path, emitted once postprocessing (merging separate video/audio streams,
+# audio extraction, thumbnail/metadata embedding, etc.) has finished and the
+# file has been moved to its final location. Needed because the *download*
+# phase's `filename`/`tmpfilename` (DL_SENTINEL above) name whichever stream
+# was downloaded most recently (e.g. a `bv*+ba` selector's separate video and
+# audio streams) — not the merged output — so tracking those alone yields the
+# wrong (and often already-deleted) file for auto-import. Confirmed via a real
+# Resolve session: auto-import failed trying to decode a `.f140.m4a` audio
+# stream file that yt-dlp had already deleted after merging it into the final
+# `.mp4`. Must match downloader.parse_final_filename_line's constant.
+DONE_SENTINEL = "RYTDLP_DONE_JSON:"
+
 
 @dataclass(frozen=True)
 class FormatPreset:
@@ -85,6 +98,11 @@ def build_download_argv(deps: ResolvedDeps, settings: Settings, url: str) -> lis
     argv += ["--newline"]
     argv += ["--progress-template", f"download:{DL_SENTINEL}%(progress)j"]
     argv += ["--progress-template", f"postprocess:{PP_SENTINEL}%(progress)j"]
+    # `--print` implies `--quiet` (which would silence the progress-template
+    # output above) unless explicitly countered — confirmed against yt-dlp's
+    # own option-handling (opts.quiet only auto-set `if opts.quiet is None`).
+    argv += ["--print", f"after_move:{DONE_SENTINEL}%(filepath)j"]
+    argv += ["--no-quiet"]
 
     if settings.embed_metadata:
         argv.append("--embed-metadata")
@@ -111,6 +129,48 @@ def build_probe_argv(deps: ResolvedDeps, url: str) -> list[str]:
     return [str(deps.ytdlp), "-J", "--flat-playlist", url]
 
 
+# Audio codec re-encoded into downloads for DaVinci Resolve on Linux. Resolve on
+# Linux can decode neither AAC nor Opus (proprietary codec licensing), so a
+# normal download imports with silent audio. FLAC was confirmed decodable in a
+# real Resolve session and is lossless — no further quality loss on top of the
+# already-lossy source — and mux-compatible with the .mp4/.mkv/.mov containers
+# these presets produce. See `downloader.transcode_audio_for_resolve`.
+RESOLVE_AUDIO_CODEC = "flac"
+
+# Force 16-bit FLAC. Confirmed empirically against a real Resolve session on
+# Linux: 24-bit FLAC (ffmpeg's default when the decoded source is high-precision
+# — e.g. AAC decodes to float) imports *silent*, while the bit-identical 16-bit
+# FLAC plays. (24-bit *PCM* decodes fine there, so this is a FLAC-decoder depth
+# limit, not a general 24-bit problem.) 16-bit is CD quality and the source is
+# already lossy, so there is no meaningful loss.
+RESOLVE_AUDIO_SAMPLE_FMT = "s16"
+
+
+def build_audio_transcode_argv(deps: ResolvedDeps, source: Path, dest: Path) -> list[str]:
+    """Build the ffmpeg argv that copies video and re-encodes audio to 16-bit FLAC.
+
+    ``-map 0 -c copy`` passes every stream through untouched (so the H.264
+    video is never re-encoded — fast and lossless); ``-c:a``/``-sample_fmt``
+    then override just the audio streams to 16-bit :data:`RESOLVE_AUDIO_CODEC`.
+    ``-y`` overwrites ``dest`` if a stale temp file is present.
+    """
+    return [
+        str(deps.ffmpeg),
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-c:a",
+        RESOLVE_AUDIO_CODEC,
+        "-sample_fmt",
+        RESOLVE_AUDIO_SAMPLE_FMT,
+        str(dest),
+    ]
+
+
 @dataclass(frozen=True)
 class FormatInfo:
     format_id: str
@@ -120,6 +180,31 @@ class FormatInfo:
     acodec: str | None
     filesize: int | None
     format_note: str | None
+
+
+def custom_format_selector_for(fmt: FormatInfo) -> str:
+    """Build a `-f` selector for one probed format picked from the formats list.
+
+    yt-dlp reports a missing stream as the literal string `"none"` (not
+    absent/`None`) in its probe JSON — confirmed via a real download where
+    picking a video-only format's bare `format_id` (e.g. `"400"`, a
+    video-only AV1 stream) produced a video with no audio track at all, since
+    nothing paired it with an audio stream. Video-only formats (`acodec` is
+    falsy/`"none"`) are paired with `+ba[ext=m4a]/ba` — audio constrained to
+    m4a (AAC) if available, falling back to plain best-audio otherwise —
+    mirroring the `FORMAT_PRESETS` table's own `bv*[...]+ba[ext=m4a]/...`
+    selectors. Confirmed via a real download that a bare `+ba` isn't enough:
+    it picked a higher-bitrate WebM/Opus audio stream over an available m4a
+    one, and DaVinci Resolve can't decode Opus — it silently imports the
+    video with no audio track, even though the merged file (verified via
+    `ffprobe`) genuinely has both streams. Audio-only or already-muxed (both
+    streams present) formats are used as-is.
+    """
+    has_video = fmt.vcodec not in (None, "none")
+    has_audio = fmt.acodec not in (None, "none")
+    if has_video and not has_audio:
+        return f"{fmt.format_id}+ba[ext=m4a]/ba"
+    return fmt.format_id
 
 
 @dataclass(frozen=True)
